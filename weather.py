@@ -6,6 +6,7 @@ https://open-meteo.com/en/docs
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -33,6 +34,24 @@ MIN_HOURS_LEFT = 3  # sind heute weniger Stunden übrig, wird der nächste Tag g
 
 CACHE_SECONDS = 15 * 60
 REQUEST_TIMEOUT = 10
+MAX_HOURS = 24 * 16  # Schutz gegen übergroße Daten vom Browser
+USER_AGENT = "wetter-outfit/1.0 (+https://github.com/juliasophie2717-arch/wetter-outfit)"
+
+log = logging.getLogger(__name__)
+
+
+def forecast_params(lat: float | None = None, lon: float | None = None) -> dict:
+    """Abfrageparameter für Open-Meteo – vom Server und vom Browser gleich genutzt."""
+    params = {
+        "hourly": ",".join(HOURLY_VARS),
+        "current": ",".join(CURRENT_VARS),
+        "timezone": "auto",
+        "forecast_days": 2,
+        "wind_speed_unit": "kmh",
+    }
+    if lat is not None and lon is not None:
+        params = {"latitude": lat, "longitude": lon, **params}
+    return params
 
 # WMO-Wettercodes -> deutsche Beschreibung und Symbol
 WEATHER_CODES: dict[int, tuple[str, str]] = {
@@ -160,33 +179,43 @@ def parse_forecast(data: dict, now: datetime | None = None) -> DayWeather:
     try:
         hourly = data["hourly"]
         times = [datetime.fromisoformat(t) for t in hourly["time"]]
-    except (KeyError, TypeError, ValueError) as exc:
+        if not times:
+            raise ValueError("leere Zeitreihe")
+        current = data.get("current") or {}
+        if not isinstance(current, dict):
+            current = {}
+        if now is None:
+            now = datetime.fromisoformat(current["time"]) if current.get("time") else times[0]
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise WeatherError("Unerwartetes Format der Wetterdaten") from exc
 
-    current = data.get("current") or {}
-    if now is None:
-        if current.get("time"):
-            now = datetime.fromisoformat(current["time"])
-        else:
-            now = times[0]
+    def _opt(key):
+        value = current.get(key)
+        return float(value) if isinstance(value, (int, float)) else None
+
+    if len(times) > MAX_HOURS:
+        raise WeatherError("Zu viele Stundenwerte in den Wetterdaten")
 
     points: list[HourlyPoint] = []
-    for i, t in enumerate(times):
-        temp = hourly["temperature_2m"][i]
-        if temp is None:
-            continue
-        points.append(
-            HourlyPoint(
-                time=t,
-                temperature=float(temp),
-                apparent=_num(hourly["apparent_temperature"][i], float(temp)),
-                precip_probability=_num(hourly["precipitation_probability"][i]),
-                precipitation=_num(hourly["precipitation"][i]),
-                weather_code=int(_num(hourly["weather_code"][i])),
-                wind_speed=_num(hourly["wind_speed_10m"][i]),
-                uv_index=_num(hourly["uv_index"][i]),
+    try:
+        for i, t in enumerate(times):
+            temp = hourly["temperature_2m"][i]
+            if temp is None:
+                continue
+            points.append(
+                HourlyPoint(
+                    time=t,
+                    temperature=float(temp),
+                    apparent=_num(hourly["apparent_temperature"][i], float(temp)),
+                    precip_probability=_num(hourly["precipitation_probability"][i]),
+                    precipitation=_num(hourly["precipitation"][i]),
+                    weather_code=int(_num(hourly["weather_code"][i])),
+                    wind_speed=_num(hourly["wind_speed_10m"][i]),
+                    uv_index=_num(hourly["uv_index"][i]),
+                )
             )
-        )
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise WeatherError("Unerwartetes Format der Wetterdaten") from exc
 
     today = now.date()
     start_hour = max(DAY_START_HOUR, now.hour)
@@ -212,12 +241,40 @@ def parse_forecast(data: dict, now: datetime | None = None) -> DayWeather:
     return DayWeather(
         label=label,
         hours=window,
-        current_temperature=current.get("temperature_2m"),
-        current_apparent=current.get("apparent_temperature"),
-        current_code=current.get("weather_code"),
-        timezone=data.get("timezone", ""),
+        current_temperature=_opt("temperature_2m"),
+        current_apparent=_opt("apparent_temperature"),
+        current_code=int(_opt("weather_code")) if _opt("weather_code") is not None else None,
+        timezone=str(data.get("timezone", ""))[:64],
         codes={p.weather_code for p in window},
     )
+
+
+def _get_json(url: str, params: dict, service: str) -> dict:
+    """GET-Anfrage mit ausführlichem Logging, damit Fehler im Render-Log sichtbar sind."""
+    try:
+        resp = requests.get(
+            url, params=params, timeout=REQUEST_TIMEOUT, headers={"User-Agent": USER_AGENT}
+        )
+    except requests.RequestException as exc:
+        log.warning("%s: Verbindung fehlgeschlagen: %r", service, exc)
+        raise WeatherError(f"{service} ist gerade nicht erreichbar") from exc
+
+    if resp.status_code != 200:
+        log.warning(
+            "%s: HTTP %s – %s", service, resp.status_code, resp.text[:300].replace("\n", " ")
+        )
+        if resp.status_code == 429:
+            raise WeatherError(f"{service} hat zu viele Anfragen erhalten (Limit erreicht)")
+        raise WeatherError(f"{service} ist gerade nicht erreichbar (HTTP {resp.status_code})")
+
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        log.warning("%s: Antwort ist kein JSON: %s", service, resp.text[:300])
+        raise WeatherError(f"{service} hat ungültige Daten geliefert") from exc
+    if not isinstance(data, dict):
+        raise WeatherError(f"{service} hat ungültige Daten geliefert")
+    return data
 
 
 _cache: dict[tuple[float, float], tuple[float, dict]] = {}
@@ -230,21 +287,7 @@ def fetch_forecast(lat: float, lon: float) -> dict:
     if cached and time.time() - cached[0] < CACHE_SECONDS:
         return cached[1]
 
-    params = {
-        "latitude": key[0],
-        "longitude": key[1],
-        "hourly": ",".join(HOURLY_VARS),
-        "current": ",".join(CURRENT_VARS),
-        "timezone": "auto",
-        "forecast_days": 2,
-        "wind_speed_unit": "kmh",
-    }
-    try:
-        resp = requests.get(FORECAST_URL, params=params, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-    except (requests.RequestException, ValueError) as exc:
-        raise WeatherError("Der Wetterdienst ist gerade nicht erreichbar") from exc
+    data = _get_json(FORECAST_URL, forecast_params(key[0], key[1]), "Der Wetterdienst")
 
     _cache[key] = (time.time(), data)
     if len(_cache) > 500:  # Cache klein halten
@@ -260,12 +303,8 @@ def get_day_weather(lat: float, lon: float) -> DayWeather:
 def search_city(name: str) -> list[dict]:
     """Sucht Orte per Name (Fallback, falls der Browser-Standort nicht freigegeben wird)."""
     params = {"name": name, "count": 5, "language": "de", "format": "json"}
-    try:
-        resp = requests.get(GEOCODING_URL, params=params, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        results = resp.json().get("results") or []
-    except (requests.RequestException, ValueError) as exc:
-        raise WeatherError("Die Ortssuche ist gerade nicht erreichbar") from exc
+    data = _get_json(GEOCODING_URL, params, "Die Ortssuche")
+    results = data.get("results") or []
 
     return [
         {

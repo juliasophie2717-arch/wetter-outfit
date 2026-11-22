@@ -53,3 +53,47 @@ def test_describe_code():
     assert describe_code(0)[0] == "Klar"
     assert describe_code(999)[0] == "Unbekannt"
     assert describe_code(None)[0] == "Unbekannt"
+
+
+class FakeResponse:
+    def __init__(self, status_code, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("kein JSON")
+        return self._payload
+
+
+def test_rate_limit_gives_clear_error(monkeypatch, caplog):
+    import weather
+
+    weather._cache.clear()
+    monkeypatch.setattr(
+        weather.requests, "get",
+        lambda *a, **k: FakeResponse(429, text='{"error":true,"reason":"Daily API request limit exceeded"}'),
+    )
+    with pytest.raises(WeatherError, match="Limit"):
+        weather.fetch_forecast(52.5, 13.4)
+    assert "429" in caplog.text
+    assert "Daily API request limit" in caplog.text
+
+
+def test_successful_fetch_is_cached(monkeypatch, forecast_factory):
+    import weather
+
+    weather._cache.clear()
+    calls = []
+
+    def fake_get(*a, **k):
+        calls.append(k["params"])
+        return FakeResponse(200, forecast_factory(temps=[5] * 48))
+
+    monkeypatch.setattr(weather.requests, "get", fake_get)
+    weather.fetch_forecast(52.5, 13.4)
+    weather.fetch_forecast(52.5, 13.4)
+    assert len(calls) == 1
+    assert calls[0]["latitude"] == 52.5
+    assert "apparent_temperature" in calls[0]["hourly"]

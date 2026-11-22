@@ -47,3 +47,30 @@ def test_recommendation_weather_error(client, monkeypatch):
 
 def test_geocode_validation(client):
     assert client.get("/api/geocode?q=a").status_code == 400
+
+
+def test_post_recommendation_with_browser_data(client, forecast_factory):
+    data = forecast_factory(temps=[20] * 48)
+    resp = client.post("/api/recommendation", json={"forecast": data, "pref": "kuehler"})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["preference"] == "kuehler"
+    assert body["tier"] == "warm"
+
+
+def test_post_recommendation_without_data(client):
+    assert client.post("/api/recommendation", json={}).status_code == 400
+    assert client.post("/api/recommendation", data="kein json").status_code == 400
+
+
+def test_post_recommendation_with_broken_data(client, forecast_factory):
+    data = forecast_factory(temps=[20] * 48)
+    data["hourly"]["temperature_2m"] = data["hourly"]["temperature_2m"][:5]  # zu kurz
+    resp = client.post("/api/recommendation", json={"forecast": data})
+    assert resp.status_code == 400
+
+
+def test_index_contains_client_config(client):
+    html = client.get("/").get_data(as_text=True)
+    assert "WO_CONFIG" in html
+    assert "api.open-meteo.com" in html

@@ -107,6 +107,27 @@
     setTimeout(function () { $("city-input").focus(); }, 50);
   }
 
+  // Ortssuche: zuerst direkt bei Open-Meteo, sonst über den Server
+  function searchPlaces(q) {
+    var direct = CONFIG.geocodingUrl
+      ? getJson(buildUrl(CONFIG.geocodingUrl, { name: q, count: 5, language: "de", format: "json" }))
+      : Promise.reject(new Error("keine Konfiguration"));
+
+    return direct
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        var results = (res.body.results || [])
+          .filter(function (r) { return typeof r.latitude === "number" && typeof r.longitude === "number"; })
+          .map(function (r) {
+            return { name: r.name, region: r.admin1 || "", country: r.country || "", lat: r.latitude, lon: r.longitude };
+          });
+        return { ok: true, body: { results: results } };
+      })
+      .catch(function () {
+        return getJson("/api/geocode?q=" + encodeURIComponent(q));
+      });
+  }
+
   $("city-form").addEventListener("submit", function (e) {
     e.preventDefault();
     var q = $("city-input").value.trim();
@@ -115,8 +136,7 @@
     list.innerHTML = "";
     list.appendChild(el("li", "muted", "Suche …"));
 
-    fetch("/api/geocode?q=" + encodeURIComponent(q))
-      .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body }; }); })
+    searchPlaces(q)
       .then(function (res) {
         list.innerHTML = "";
         if (!res.ok) throw new Error(res.body.error || "Fehler bei der Suche");
@@ -145,16 +165,67 @@
       });
   });
 
+  // --- Hilfsfunktionen für Anfragen ---
+  var CONFIG = window.WO_CONFIG || {};
+
+  function buildUrl(base, params) {
+    var query = Object.keys(params).map(function (k) {
+      return encodeURIComponent(k) + "=" + encodeURIComponent(params[k]);
+    }).join("&");
+    return base + "?" + query;
+  }
+
+  // Liefert { ok, body } und wirft nur bei Netzwerkfehlern
+  function getJson(url, options) {
+    return fetch(url, options).then(function (r) {
+      return r.json()
+        .catch(function () { return {}; })
+        .then(function (body) { return { ok: r.ok, status: r.status, body: body }; });
+    });
+  }
+
+  // Wetter direkt im Browser bei Open-Meteo holen (eigene IP statt geteilter Server-IP)
+  function fetchForecastInBrowser(coords) {
+    if (!CONFIG.forecastUrl) return Promise.reject(new Error("keine Konfiguration"));
+    var params = Object.assign(
+      { latitude: coords.lat.toFixed(2), longitude: coords.lon.toFixed(2) },
+      CONFIG.forecastParams
+    );
+    return getJson(buildUrl(CONFIG.forecastUrl, params)).then(function (res) {
+      if (!res.ok || !res.body || !res.body.hourly) {
+        throw new Error("Open-Meteo antwortet mit HTTP " + res.status);
+      }
+      return res.body;
+    });
+  }
+
+  function recommendationFromForecast(forecast) {
+    return getJson("/api/recommendation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ forecast: forecast, pref: getPref() || "normal" })
+    });
+  }
+
+  function recommendationFromServer(coords) {
+    return getJson(buildUrl("/api/recommendation", {
+      lat: coords.lat.toFixed(4),
+      lon: coords.lon.toFixed(4),
+      pref: getPref() || "normal"
+    }));
+  }
+
   // --- Empfehlung laden ---
   function fetchRecommendation(coords) {
     lastCoords = coords;
     loading("Wetter wird abgerufen …");
-    var url = "/api/recommendation?lat=" + encodeURIComponent(coords.lat.toFixed(4)) +
-      "&lon=" + encodeURIComponent(coords.lon.toFixed(4)) +
-      "&pref=" + encodeURIComponent(getPref() || "normal");
 
-    fetch(url)
-      .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body }; }); })
+    fetchForecastInBrowser(coords)
+      .then(recommendationFromForecast, function (err) {
+        // Browser-Abruf fehlgeschlagen -> Server versucht es selbst
+        if (window.console) console.warn("Wetter im Browser nicht abrufbar:", err.message);
+        return recommendationFromServer(coords);
+      })
       .then(function (res) {
         if (!res.ok) throw new Error(res.body.error || "Unbekannter Fehler");
         renderResult(res.body, coords);

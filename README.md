@@ -6,6 +6,12 @@ Eine kleine Python-Webanwendung, die dir jeden Morgen anhand des aktuellen Wette
 - **Kälteempfinden** wird beim ersten Besuch abgefragt („eher wärmer“, „normal“, „eher kühler“) und im Browser gespeichert.
 - **Wetterdaten** kommen von [Open-Meteo](https://open-meteo.com/), kostenlos und ohne API-Key.
 
+## Woher kommen die Wetterdaten?
+
+Der **Browser** ruft Open-Meteo direkt ab und schickt die Daten per `POST /api/recommendation` an den Server, der daraus die Empfehlung berechnet. Grund: Hosting-Anbieter wie Render teilen sich ausgehende IP-Adressen, und Open-Meteo begrenzt kostenlose Anfragen pro IP. Über den Browser zählt die IP der Nutzerin.
+
+Klappt der Abruf im Browser nicht, holt der Server die Daten selbst (`GET /api/recommendation?lat=…&lon=…`). Fehler dabei, z. B. HTTP 429 „Limit erreicht“, stehen mit Details im Render-Log.
+
 ## So funktioniert die Empfehlung
 
 1. Für das Tageszeitfenster 7–20 Uhr (bzw. ab der aktuellen Stunde) werden stündliche Werte geladen: Temperatur, gefühlte Temperatur, Regenwahrscheinlichkeit und -menge, Wind, UV-Index, Wettercode. Ab 19 Uhr gibt es die Empfehlung für den nächsten Tag.

@@ -91,6 +91,7 @@
     <p class="credit">Wetterdaten: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a></p>
   </main>
 
+  <script>window.WO_CONFIG = {{ client_config | tojson }};</script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
