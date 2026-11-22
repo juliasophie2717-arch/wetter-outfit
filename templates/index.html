@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Was ziehe ich heute an?</title>
+  <meta name="description" content="Kleidungsempfehlung für heute – passend zum Wetter an deinem Standort.">
+  <meta name="theme-color" content="#f4efe6">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧥</text></svg>">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="app">
+    <header class="app-header">
+      <p class="eyebrow" id="date-line"></p>
+      <h1>Was ziehe ich heute an?</h1>
+    </header>
+
+    <!-- Schritt 1: Kälteempfinden -->
+    <section class="card" id="view-preference" hidden>
+      <h2>Wie ziehst du dich im Durchschnitt an?</h2>
+      <p class="muted">Damit passe ich die Vorschläge an dein Kälteempfinden an. Du kannst das später jederzeit ändern.</p>
+      <div class="pref-options">
+        {% for key, pref in preferences.items() %}
+        <button type="button" class="pref-option" data-pref="{{ key }}">
+          <span class="pref-icon">{% if key == 'waermer' %}🧣{% elif key == 'kuehler' %}🩳{% else %}👕{% endif %}</span>
+          <span>{{ pref.label }}</span>
+        </button>
+        {% endfor %}
+      </div>
+    </section>
+
+    <!-- Laden -->
+    <section class="card center" id="view-loading" hidden>
+      <div class="spinner" aria-hidden="true"></div>
+      <p id="loading-text">Standort wird ermittelt …</p>
+    </section>
+
+    <!-- Fallback: Ort suchen -->
+    <section class="card" id="view-location" hidden>
+      <h2>Wo bist du gerade?</h2>
+      <p class="muted" id="location-reason">Dein Standort konnte nicht ermittelt werden. Gib stattdessen einen Ort ein.</p>
+      <form id="city-form" class="city-form" autocomplete="off">
+        <input type="search" id="city-input" placeholder="z. B. Berlin" aria-label="Ort" required minlength="2">
+        <button type="submit" class="btn">Suchen</button>
+      </form>
+      <ul class="city-results" id="city-results"></ul>
+      <button type="button" class="link-btn" id="retry-geo">Standort erneut abfragen</button>
+    </section>
+
+    <!-- Fehler -->
+    <section class="card" id="view-error" hidden>
+      <h2>Das hat nicht geklappt</h2>
+      <p class="muted" id="error-text"></p>
+      <button type="button" class="btn" id="error-retry">Nochmal versuchen</button>
+    </section>
+
+    <!-- Ergebnis -->
+    <section id="view-result" hidden>
+      <article class="card hero">
+        <div class="hero-top">
+          <div>
+            <p class="eyebrow" id="r-place"></p>
+            <h2 id="r-headline"></h2>
+            <p id="r-summary"></p>
+          </div>
+          <div class="now" id="r-now"></div>
+        </div>
+        <ul class="outfit" id="r-items"></ul>
+        <div class="extras" id="r-extras-wrap" hidden>
+          <h3>Nicht vergessen</h3>
+          <ul class="chips" id="r-extras"></ul>
+        </div>
+        <ul class="hints" id="r-hints"></ul>
+      </article>
+
+      <article class="card">
+        <h3 id="r-hourly-title">Tagesverlauf</h3>
+        <div class="stats" id="r-stats"></div>
+        <ol class="hourly" id="r-hourly"></ol>
+      </article>
+
+      <footer class="settings">
+        <p>Kälteempfinden: <strong id="r-pref"></strong>
+          <button type="button" class="link-btn" id="change-pref">ändern</button></p>
+        <p><button type="button" class="link-btn" id="refresh">Standort &amp; Wetter aktualisieren</button>
+          · <button type="button" class="link-btn" id="change-place">anderen Ort wählen</button></p>
+      </footer>
+    </section>
+
+    <p class="credit">Wetterdaten: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a></p>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
